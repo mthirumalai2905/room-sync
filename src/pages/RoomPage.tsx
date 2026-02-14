@@ -137,19 +137,31 @@ export default function RoomPage() {
   }
 
   const renderRoom = () => {
-    switch (room.type) {
-      case 'whiteboard':
-        return <WhiteboardRoom roomId={room.id} />;
-      case 'code':
-        return <CodeRoom roomId={room.id} />;
-      case 'voice':
-        return <VoiceRoom roomId={room.id} onLeave={handleLeave} />;
-      case 'video':
-        return <VideoRoom roomId={room.id} onLeave={handleLeave} />;
-      default:
-        return <p className="text-muted-foreground font-mono p-4">Unknown room type</p>;
-    }
-  };
+  switch (room.type) {
+    case 'whiteboard':
+      return <WhiteboardRoom roomId={room.id} />;
+
+    case 'code':
+      return <CodeRoom roomId={room.id} />;
+
+    case 'voice':
+      return (
+        <VoiceRoom
+          roomId={room.id}
+          onLeave={handleLeave}
+          users={users}
+          currentUserId={userId}
+        />
+      );
+
+    case 'video':
+      return <VideoRoom roomId={room.id} onLeave={handleLeave} />;
+
+    default:
+      return <p className="text-muted-foreground font-mono p-4">Unknown room type</p>;
+  }
+};
+
 
   return (
     <div className="h-screen flex flex-col bg-background">
