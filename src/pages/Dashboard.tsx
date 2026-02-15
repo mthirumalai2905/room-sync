@@ -19,6 +19,10 @@ export default function Dashboard() {
   const [joinById, setJoinById] = useState('');
   const navigate = useNavigate();
 
+  // Real-time presence counts per room
+  const [presenceCounts, setPresenceCounts] = useState<Record<string, number>>({});
+  const presenceChannelsRef = useState<ReturnType<typeof supabase.channel>[]>([])[0];
+
   const loadRooms = async () => {
     setLoading(true);
     try {
@@ -29,6 +33,43 @@ export default function Dashboard() {
     }
     setLoading(false);
   };
+
+  // Subscribe to presence for each room to get real-time user counts
+  useEffect(() => {
+    if (!username || rooms.length === 0) return;
+
+    // Clean up old channels
+    presenceChannelsRef.forEach((ch) => ch.unsubscribe());
+    presenceChannelsRef.length = 0;
+
+    rooms.forEach((room) => {
+      const channel = supabase.channel(`dashboard-presence-${room.id}`, {
+        config: { presence: { key: '__dashboard__' } },
+      });
+
+      channel
+        .on('presence', { event: 'sync' }, () => {
+          const state = channel.presenceState();
+          // Count all presence entries except our dashboard key
+          let count = 0;
+          Object.entries(state).forEach(([key, arr]) => {
+            if (key !== '__dashboard__') {
+              count += (arr as any[]).length;
+            }
+          });
+          setPresenceCounts((prev) => ({ ...prev, [room.id]: count }));
+        })
+        .subscribe();
+
+      presenceChannelsRef.push(channel);
+    });
+
+    return () => {
+      presenceChannelsRef.forEach((ch) => ch.unsubscribe());
+      presenceChannelsRef.length = 0;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [username, rooms.map((r) => r.id).join(',')]);
 
   useEffect(() => {
     if (!username) return;
@@ -60,6 +101,12 @@ export default function Dashboard() {
   };
 
   if (!username) return <UsernamePrompt />;
+
+  // Override active_users with real-time presence counts
+  const roomsWithLiveCounts = rooms.map((r) => ({
+    ...r,
+    active_users: presenceCounts[r.id] ?? 0,
+  }));
 
   return (
     <div className="min-h-screen bg-background">
@@ -106,14 +153,14 @@ export default function Dashboard() {
         {/* Room grid */}
         {loading ? (
           <p className="text-sm font-mono text-muted-foreground">Loading rooms...</p>
-        ) : rooms.length === 0 ? (
+        ) : roomsWithLiveCounts.length === 0 ? (
           <div className="text-center py-20">
             <p className="text-sm font-mono text-muted-foreground mb-2">No rooms yet</p>
             <p className="text-xs font-mono text-muted-foreground">Create one to get started</p>
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-            {rooms.map((room) => (
+            {roomsWithLiveCounts.map((room) => (
               <RoomCard key={room.id} room={room} onJoin={handleJoinClick} />
             ))}
           </div>

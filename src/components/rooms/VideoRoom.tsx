@@ -143,7 +143,9 @@ export default function VideoRoom({ roomId, onLeave, users, currentUserId }: Pro
   const toggleScreenShare = async () => {
     if (sharing) {
       screenStream.current?.getTracks().forEach((t) => t.stop());
+      screenStream.current = null;
       setSharing(false);
+      // Restore camera track to peers
       const videoTrack = localStream.current?.getVideoTracks()[0];
       if (videoTrack) {
         peers.current.forEach((pc) => {
@@ -160,7 +162,17 @@ export default function VideoRoom({ roomId, onLeave, users, currentUserId }: Pro
           const sender = pc.getSenders().find((s) => s.track?.kind === 'video');
           sender?.replaceTrack(screenTrack);
         });
-        screenTrack.onended = () => setSharing(false);
+        screenTrack.onended = () => {
+          screenStream.current = null;
+          setSharing(false);
+          const camTrack = localStream.current?.getVideoTracks()[0];
+          if (camTrack) {
+            peers.current.forEach((pc) => {
+              const sender = pc.getSenders().find((s) => s.track?.kind === 'video');
+              sender?.replaceTrack(camTrack);
+            });
+          }
+        };
         setSharing(true);
       } catch {
         // User cancelled
@@ -168,49 +180,114 @@ export default function VideoRoom({ roomId, onLeave, users, currentUserId }: Pro
     }
   };
 
-  // Build a user map that includes remote stream info
+  // Build user entries with streams
   const allUsers = users.map((u) => ({
     ...u,
     stream: u.userId === currentUserId ? localStream.current : remoteStreams.get(u.userId) ?? null,
     isLocal: u.userId === currentUserId,
   }));
 
-  const gridCols =
-    allUsers.length <= 1 ? 'grid-cols-1' :
-    allUsers.length === 2 ? 'grid-cols-2' :
-    allUsers.length <= 4 ? 'grid-cols-2' : 'grid-cols-2 md:grid-cols-3';
+  const hasScreenShare = sharing && screenStream.current;
 
   return (
     <div className="flex flex-col h-full bg-background">
-      {/* User grid — same style as VoiceRoom */}
-      <div className={`grid ${gridCols} gap-4 p-6 flex-1 overflow-auto`}>
-        {allUsers.map((u) => (
-          <div
-            key={u.userId}
-            className="bg-card border border-border rounded-xl flex flex-col items-center justify-center relative overflow-hidden min-h-[200px]"
-          >
-            {u.stream ? (
+      {/* Main content area */}
+      <div className="flex-1 overflow-auto p-4">
+        {hasScreenShare ? (
+          /* Screen share layout: big screen + small user tiles */
+          <div className="flex flex-col h-full gap-3">
+            {/* Screen share — takes most space */}
+            <div className="flex-1 min-h-0 bg-card border border-primary/40 rounded-xl overflow-hidden relative">
               <video
                 autoPlay
                 playsInline
-                muted={u.isLocal}
+                muted
                 ref={(el) => {
-                  if (el && el.srcObject !== u.stream) el.srcObject = u.stream;
+                  if (el && screenStream.current && el.srcObject !== screenStream.current) {
+                    el.srcObject = screenStream.current;
+                  }
                 }}
-                className="w-full h-full object-cover absolute inset-0"
+                className="w-full h-full object-contain absolute inset-0"
               />
-            ) : (
-              <div className={`w-20 h-20 rounded-full flex items-center justify-center border-2 ${u.isLocal ? 'border-online' : 'border-muted-foreground'}`}>
-                <span className="text-xl font-mono">{u.username.charAt(0).toUpperCase()}</span>
-              </div>
-            )}
-            <span className="absolute bottom-2 left-2 text-xs font-mono bg-background/80 px-2 py-0.5 rounded text-foreground z-10">
-              {u.username}{u.isLocal && ' (You)'}
-              {u.isLocal && muted && ' 🔇'}
-              {u.isLocal && cameraOff && ' 📷❌'}
-            </span>
+              <span className="absolute top-2 left-2 text-xs font-mono bg-primary/80 text-primary-foreground px-2 py-0.5 rounded z-10">
+                Screen Share
+              </span>
+            </div>
+
+            {/* User tiles — small row at bottom */}
+            <div className="flex gap-3 overflow-x-auto pb-1 flex-shrink-0">
+              {allUsers.map((u) => (
+                <div
+                  key={u.userId}
+                  className="w-28 h-28 flex-shrink-0 bg-card border border-border rounded-lg flex flex-col items-center justify-center relative overflow-hidden"
+                >
+                  {u.stream && !u.isLocal ? (
+                    <video
+                      autoPlay
+                      playsInline
+                      muted={u.isLocal}
+                      ref={(el) => {
+                        if (el && el.srcObject !== u.stream) el.srcObject = u.stream;
+                      }}
+                      className="w-full h-full object-cover absolute inset-0"
+                    />
+                  ) : u.isLocal && localStream.current ? (
+                    <video
+                      autoPlay
+                      playsInline
+                      muted
+                      ref={(el) => {
+                        if (el && el.srcObject !== localStream.current) el.srcObject = localStream.current;
+                      }}
+                      className="w-full h-full object-cover absolute inset-0"
+                    />
+                  ) : (
+                    <div className={`w-10 h-10 rounded-full flex items-center justify-center border-2 ${u.isLocal ? 'border-online' : 'border-muted-foreground'}`}>
+                      <span className="text-sm font-mono">{u.username.charAt(0).toUpperCase()}</span>
+                    </div>
+                  )}
+                  <span className="absolute bottom-1 left-1 text-[10px] font-mono bg-background/80 px-1 py-0.5 rounded text-foreground z-10 truncate max-w-full">
+                    {u.username}{u.isLocal && ' (You)'}
+                  </span>
+                </div>
+              ))}
+            </div>
           </div>
-        ))}
+        ) : (
+          /* Normal layout: equal grid */
+          <div className={`grid gap-4 h-full ${
+            allUsers.length <= 1 ? 'grid-cols-1' :
+            allUsers.length <= 4 ? 'grid-cols-2' : 'grid-cols-2 md:grid-cols-3'
+          }`}>
+            {allUsers.map((u) => (
+              <div
+                key={u.userId}
+                className="bg-card border border-border rounded-xl flex flex-col items-center justify-center relative overflow-hidden min-h-[200px]"
+              >
+                {u.stream ? (
+                  <video
+                    autoPlay
+                    playsInline
+                    muted={u.isLocal}
+                    ref={(el) => {
+                      if (el && el.srcObject !== u.stream) el.srcObject = u.stream;
+                    }}
+                    className="w-full h-full object-cover absolute inset-0"
+                  />
+                ) : (
+                  <div className={`w-20 h-20 rounded-full flex items-center justify-center border-2 ${u.isLocal ? 'border-online' : 'border-muted-foreground'}`}>
+                    <span className="text-xl font-mono">{u.username.charAt(0).toUpperCase()}</span>
+                  </div>
+                )}
+                <span className="absolute bottom-2 left-2 text-xs font-mono bg-background/80 px-2 py-0.5 rounded text-foreground z-10">
+                  {u.username}{u.isLocal && ' (You)'}
+                  {u.isLocal && muted && ' 🔇'}
+                  {u.isLocal && cameraOff && ' 📷❌'}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Bottom Controls */}
