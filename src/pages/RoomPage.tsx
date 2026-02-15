@@ -2,7 +2,7 @@ import { useEffect, useState, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
 import { useUserStore } from '@/stores/userStore';
-import { Room, validateRoomAccess, incrementUsers, decrementUsers } from '@/lib/rooms';
+import { Room, validateRoomAccess, syncActiveUsers } from '@/lib/rooms';
 import RoomTopBar from '@/components/rooms/RoomTopBar';
 import UserPresencePanel from '@/components/rooms/UserPresencePanel';
 import WhiteboardRoom from '@/components/rooms/WhiteboardRoom';
@@ -25,7 +25,6 @@ export default function RoomPage() {
   const [accessKey, setAccessKey] = useState('');
   const [users, setUsers] = useState<PresenceUser[]>([]);
   const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
-  const hasJoined = useRef(false);
 
   const joinRoom = async (key?: string) => {
     if (!roomId) return;
@@ -41,12 +40,8 @@ export default function RoomPage() {
     }
     setRoom(r);
     setStatus('joined');
-    if (!hasJoined.current) {
-      hasJoined.current = true;
-      await incrementUsers(roomId);
-    }
 
-    // Presence
+    // Presence — this is the SOLE source of truth for active user count
     const channel = supabase.channel(`presence-${roomId}`, { config: { presence: { key: userId } } });
     channelRef.current = channel;
 
@@ -58,9 +53,11 @@ export default function RoomPage() {
           arr.forEach((p: any) => list.push({ userId: p.userId, username: p.username }));
         });
         setUsers(list);
+        // Sync the count back to DB so dashboard cards show correct numbers
+        syncActiveUsers(roomId, list.length);
       })
-      .subscribe(async (status) => {
-        if (status === 'SUBSCRIBED') {
+      .subscribe(async (st) => {
+        if (st === 'SUBSCRIBED') {
           await channel.track({ userId, username });
         }
       });
@@ -71,10 +68,10 @@ export default function RoomPage() {
     joinRoom();
 
     return () => {
-      if (hasJoined.current && roomId) {
-        decrementUsers(roomId);
-      }
+      // On leave, untrack will fire presence sync → count updates to N-1
+      channelRef.current?.untrack();
       channelRef.current?.unsubscribe();
+      // Also force set to 0 if we're the last one (handled by presence sync above)
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomId, username]);
@@ -137,31 +134,33 @@ export default function RoomPage() {
   }
 
   const renderRoom = () => {
-  switch (room.type) {
-    case 'whiteboard':
-      return <WhiteboardRoom roomId={room.id} />;
-
-    case 'code':
-      return <CodeRoom roomId={room.id} />;
-
-    case 'voice':
-      return (
-        <VoiceRoom
-          roomId={room.id}
-          onLeave={handleLeave}
-          users={users}
-          currentUserId={userId}
-        />
-      );
-
-    case 'video':
-      return <VideoRoom roomId={room.id} onLeave={handleLeave} />;
-
-    default:
-      return <p className="text-muted-foreground font-mono p-4">Unknown room type</p>;
-  }
-};
-
+    switch (room.type) {
+      case 'whiteboard':
+        return <WhiteboardRoom roomId={room.id} />;
+      case 'code':
+        return <CodeRoom roomId={room.id} />;
+      case 'voice':
+        return (
+          <VoiceRoom
+            roomId={room.id}
+            onLeave={handleLeave}
+            users={users}
+            currentUserId={userId}
+          />
+        );
+      case 'video':
+        return (
+          <VideoRoom
+            roomId={room.id}
+            onLeave={handleLeave}
+            users={users}
+            currentUserId={userId}
+          />
+        );
+      default:
+        return <p className="text-muted-foreground font-mono p-4">Unknown room type</p>;
+    }
+  };
 
   return (
     <div className="h-screen flex flex-col bg-background">
