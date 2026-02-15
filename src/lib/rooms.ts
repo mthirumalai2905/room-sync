@@ -62,54 +62,13 @@ export async function validateRoomAccess(
 }
 
 /**
- * Increment users safely
+ * Sync active_users column from presence count
  */
-export async function incrementUsers(roomId: string) {
-  const { data, error } = await supabase
+export async function syncActiveUsers(roomId: string, count: number) {
+  await supabase
     .from('rooms')
-    .select('active_users, max_users')
-    .eq('id', roomId)
-    .single();
-
-  if (error) throw error;
-  if (!data) return;
-
-  const current = data.active_users ?? 0;
-  const max = data.max_users ?? 10;
-
-  if (current >= max) {
-    throw new Error('Room is already full');
-  }
-
-  const { error: updateError } = await supabase
-    .from('rooms')
-    .update({ active_users: current + 1 })
+    .update({ active_users: count })
     .eq('id', roomId);
-
-  if (updateError) throw updateError;
-}
-
-/**
- * Decrement users safely
- */
-export async function decrementUsers(roomId: string) {
-  const { data, error } = await supabase
-    .from('rooms')
-    .select('active_users')
-    .eq('id', roomId)
-    .single();
-
-  if (error) throw error;
-  if (!data) return;
-
-  const current = data.active_users ?? 0;
-
-  const { error: updateError } = await supabase
-    .from('rooms')
-    .update({ active_users: Math.max(current - 1, 0) })
-    .eq('id', roomId);
-
-  if (updateError) throw updateError;
 }
 
 /**
