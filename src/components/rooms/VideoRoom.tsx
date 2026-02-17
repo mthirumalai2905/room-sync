@@ -33,6 +33,7 @@ export default function VideoRoom({ roomId, onLeave, users, currentUserId }: Pro
   const peers = useRef<Map<string, RTCPeerConnection>>(new Map());
   const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
   const [remoteStreams, setRemoteStreams] = useState<Map<string, MediaStream>>(new Map());
+  const [remoteScreenSharing, setRemoteScreenSharing] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     let mounted = true;
@@ -52,7 +53,18 @@ export default function VideoRoom({ roomId, onLeave, users, currentUserId }: Pro
           }
           const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
           peers.current.set(remoteId, pc);
+
+          // Add all local tracks (audio + video)
           localStream.current?.getTracks().forEach((t) => pc.addTrack(t, localStream.current!));
+
+          // If screen sharing is active, replace the video track with the screen track
+          if (screenStream.current) {
+            const screenTrack = screenStream.current.getVideoTracks()[0];
+            if (screenTrack) {
+              const sender = pc.getSenders().find((s) => s.track?.kind === 'video');
+              sender?.replaceTrack(screenTrack);
+            }
+          }
 
           pc.onicecandidate = (e) => {
             if (e.candidate) {
@@ -67,6 +79,16 @@ export default function VideoRoom({ roomId, onLeave, users, currentUserId }: Pro
                 next.set(remoteId, e.streams[0]);
                 return next;
               });
+            }
+          };
+
+          pc.onnegotiationneeded = async () => {
+            try {
+              const offer = await pc.createOffer();
+              await pc.setLocalDescription(offer);
+              channel.send({ type: 'broadcast', event: 'video-offer', payload: { sender: userId, target: remoteId, sdp: offer } });
+            } catch (err) {
+              console.warn('Negotiation error', err);
             }
           };
 
@@ -103,12 +125,22 @@ export default function VideoRoom({ roomId, onLeave, users, currentUserId }: Pro
             const pc = createPeer(payload.userId);
             const offer = await pc.createOffer();
             await pc.setLocalDescription(offer);
-            channel.send({ type: 'broadcast', event: 'video-offer', payload: { sender: userId, target: payload.userId, sdp: offer } });
+            channel.send({ type: 'broadcast', event: 'video-offer', payload: { sender: userId, target: payload.userId, sdp: offer, sharing: !!screenStream.current } });
           })
           .on('broadcast', { event: 'video-leave' }, ({ payload }) => {
             const pc = peers.current.get(payload.userId);
             if (pc) { pc.close(); peers.current.delete(payload.userId); }
             setRemoteStreams((prev) => { const n = new Map(prev); n.delete(payload.userId); return n; });
+          })
+          .on('broadcast', { event: 'video-screen-status' }, ({ payload }) => {
+            if (payload.userId === userId) return;
+            // Track which remote users are sharing - used for UI
+            setRemoteScreenSharing((prev) => {
+              const next = new Set(prev);
+              if (payload.sharing) next.add(payload.userId);
+              else next.delete(payload.userId);
+              return next;
+            });
           })
           .subscribe(() => {
             channel.send({ type: 'broadcast', event: 'video-join', payload: { userId, username } });
@@ -145,6 +177,8 @@ export default function VideoRoom({ roomId, onLeave, users, currentUserId }: Pro
       screenStream.current?.getTracks().forEach((t) => t.stop());
       screenStream.current = null;
       setSharing(false);
+      // Broadcast screen share stopped
+      channelRef.current?.send({ type: 'broadcast', event: 'video-screen-status', payload: { userId, sharing: false } });
       // Restore camera track to peers
       const videoTrack = localStream.current?.getVideoTracks()[0];
       if (videoTrack) {
@@ -162,9 +196,12 @@ export default function VideoRoom({ roomId, onLeave, users, currentUserId }: Pro
           const sender = pc.getSenders().find((s) => s.track?.kind === 'video');
           sender?.replaceTrack(screenTrack);
         });
+        // Broadcast screen share started
+        channelRef.current?.send({ type: 'broadcast', event: 'video-screen-status', payload: { userId, sharing: true } });
         screenTrack.onended = () => {
           screenStream.current = null;
           setSharing(false);
+          channelRef.current?.send({ type: 'broadcast', event: 'video-screen-status', payload: { userId, sharing: false } });
           const camTrack = localStream.current?.getVideoTracks()[0];
           if (camTrack) {
             peers.current.forEach((pc) => {
